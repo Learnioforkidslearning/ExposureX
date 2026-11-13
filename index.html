@@ -127,10 +127,37 @@ function analyseUrl(url){const u=url.trim();let host="";try{host=new URL(/:\/\//
  return{host,risk:r.length===0?"LOW":r.length===1?"MODERATE":"HIGH",reasons:r.length?r:["No suspicious pattern found"],
  note:"Rule-based check only. 'Low' does not mean safe. Never enter passwords after clicking an unexpected link."}}
 
+
 // ---------- BACKEND CONNECTION ----------
 const API_BASE = "https://exposurex.onrender.com";
 
 async function post(path, body) {
+
+  // DEMO MODE: calculate sample results locally.
+  // This does not require Render or an internet connection.
+  if (path === "/api/scan" && body.demo === true) {
+    const sample = DEMO;
+    const result = riskScore(sample, body.practices);
+    const now = new Date().toISOString();
+
+    return {
+      status: "exposure_found",
+      incidents: sample.length,
+      unique_organisations: new Set(
+        sample.map(x => x.domain)
+      ).size,
+      breaches: sample,
+      score: result.score,
+      level: result.level,
+      factors: result.factors,
+      recommendations: recs(sample, body.practices),
+      source: "SAMPLE DEMO DATA (not a real lookup)",
+      scanned_at: now,
+      disclaimer: "Sample data only. The score is a project-defined heuristic, not a probability."
+    };
+  }
+
+  // REAL SCANS and URL CHECKS: contact Render.
   const response = await fetch(`${API_BASE}${path}`, {
     method: "POST",
     headers: {
@@ -151,14 +178,6 @@ async function post(path, body) {
 
   return data;
 }
-{
- if(path==='/api/url-check')return analyseUrl(body.url);
- const now=new Date().toISOString();
- if(!body.demo)return{status:'unable_to_assess',message:'Live lookups need the Python backend, which this hosted demo does not have. Use demo data here, or run ExposureX locally (see the repo README).',source:'none',scanned_at:now};
- const s=riskScore(DEMO,body.practices);
- return{status:'exposure_found',incidents:DEMO.length,unique_organisations:new Set(DEMO.map(x=>x.domain)).size,breaches:DEMO,score:s.score,level:s.level,factors:s.factors,
- recommendations:recs(DEMO,body.practices),source:'SAMPLE DEMO DATA (not a real lookup)',scanned_at:now,
- disclaimer:'Sample data for demonstration. The score is a project-defined heuristic, not a probability.'}}
 function practices(){if(!document.querySelector('details').open)return null;const g=k=>$(k).checked;return{mfa:g('mfa'),reuse:g('reuse'),manager:g('manager'),recovery:g('recovery'),update:g('update')}}
 
 async function scan(demo){
