@@ -37,7 +37,11 @@ details{margin:.5rem 0}.hidden{display:none}
 
 <section id="scan"><h2>Email exposure scanner</h2>
 <div class="panel">
-<p class="mu">We send your email to the breach provider (XposedOrNot) to look it up. Nothing is saved. Never enter passwords here.</p>
+<p class="mu">
+Your email address is sent to the ExposureX backend hosted on Render
+and forwarded to XposedOrNot for checking. ExposureX does not intentionally
+store or log submitted email addresses. Never enter real passwords here.
+</p>
 <form id="f" class="row" novalidate><input id="email" type="email" aria-label="Email address" placeholder="you@example.com" autocomplete="email">
 <button>Scan my email</button><button type="button" class="ghost" id="demoBtn">Use demo data</button></form>
 <details><summary>Optional: your security habits (improves the score)</summary>
@@ -122,7 +126,32 @@ function analyseUrl(url){const u=url.trim();let host="";try{host=new URL(/:\/\//
  if(["zip","mov","tk","xyz","top","click"].includes(host.split(".").pop()))r.push("TLD often abused in scams");
  return{host,risk:r.length===0?"LOW":r.length===1?"MODERATE":"HIGH",reasons:r.length?r:["No suspicious pattern found"],
  note:"Rule-based check only. 'Low' does not mean safe. Never enter passwords after clicking an unexpected link."}}
-async function post(path,body){
+
+// ---------- BACKEND CONNECTION ----------
+const API_BASE = "https://exposurex.onrender.com";
+
+async function post(path, body) {
+  const response = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(
+      typeof data.detail === "string"
+        ? data.detail
+        : `Backend error: HTTP ${response.status}`
+    );
+  }
+
+  return data;
+}
+{
  if(path==='/api/url-check')return analyseUrl(body.url);
  const now=new Date().toISOString();
  if(!body.demo)return{status:'unable_to_assess',message:'Live lookups need the Python backend, which this hosted demo does not have. Use demo data here, or run ExposureX locally (see the repo README).',source:'none',scanned_at:now};
