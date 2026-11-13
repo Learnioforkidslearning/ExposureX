@@ -36,7 +36,12 @@ details{margin:.5rem 0}.hidden{display:none}
 
 <section id="scan"><h2>Email exposure scanner</h2>
 <div class="panel">
-<p class="mu">We send your email to the breach provider (XposedOrNot) to look it up. Nothing is saved. Never enter passwords here.</p>
+<p class="mu">
+Your email is sent to the ExposureX backend hosted on Render
+and forwarded to XposedOrNot for checking.
+ExposureX does not intentionally store or log submitted
+email addresses or passwords. Never enter real passwords here.
+</p>
 <form id="f" class="row" novalidate><input id="email" type="email" aria-label="Email address" placeholder="you@example.com" autocomplete="email">
 <button>Scan my email</button><button type="button" class="ghost" id="demoBtn">Use demo data</button></form>
 <details><summary>Optional: your security habits (improves the score)</summary>
@@ -80,8 +85,373 @@ let pulse=0;
 }catch(e){document.body.style.background='radial-gradient(circle at 70% 40%,#13306a,#050b1a)'}})();
 
 // ---------- helpers ----------
+const $ = id => document.getElementById(id);
+
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+  '"': '&quot;',
+  "'": '&#39;'
+}[c]));
+
+// ---------- LIVE BACKEND ADDRESS ----------
+// Replace this example with your actual Render URL.
+const API_BASE = "https://exposurex.onrender.com";
+
+// ---------- OFFLINE SAMPLE DATA ----------
+const DEMO = [
+  {
+    breach: "DemoShop",
+    domain: "demoshop.example",
+    date: "2019",
+    data: ["Email addresses", "Passwords"]
+  },
+  {
+    breach: "SampleForum",
+    domain: "sampleforum.example",
+    date: "2022",
+    data: ["Email addresses", "Usernames", "IP addresses"]
+  },
+  {
+    breach: "DemoShop (second incident)",
+    domain: "demoshop.example",
+    date: "2024",
+    data: ["Email addresses", "Phone numbers"]
+  }
+];
+
+const SENS = new Set([
+  "passwords", "password", "credit cards",
+  "bank account numbers", "social security numbers",
+  "government issued ids", "security questions and answers",
+  "payment histories", "health"
+]);
+
+// ---------- OFFLINE RISK CALCULATOR ----------
+function riskScore(breaches, practices) {
+  practices = practices || {};
+  const factors = [];
+  let points = Math.min(25, breaches.length * 5);
+
+  factors.push({
+    factor: "Number of exposure incidents",
+    points,
+    max: 25,
+    why: `${breaches.length} incident(s) x 5 points, capped at 25`
+  });
+
+  const years = breaches
+    .map(x => (String(x.date || '').match(/(19|20)\d{2}/) || [])[0])
+    .filter(Boolean)
+    .map(Number);
+
+  let why;
+
+  if (years.length) {
+    const age = 2026 - Math.max(...years);
+    points = age <= 1 ? 20 : age <= 3 ? 14 : age <= 6 ? 8 : 3;
+    why = "Most recent reported year " + Math.max(...years);
+  } else {
+    points = 10;
+    why = "No dates reported: neutral 10/20";
+  }
+
+  factors.push({
+    factor: "Recency of exposures",
+    points,
+    max: 20,
+    why
+  });
+
+  const categories = new Set(
+    breaches.flatMap(x => x.data.map(c => c.trim().toLowerCase()))
+  );
+
+  const hits = [...categories].filter(c => SENS.has(c));
+
+  factors.push({
+    factor: "Sensitive data categories",
+    points: Math.min(25, hits.length * 9),
+    max: 25,
+    why: "Sensitive categories reported: " +
+      (hits.length ? hits.sort().join(', ') : "none")
+  });
+
+  const organisations = breaches.map(
+    x => (x.domain || x.breach).toLowerCase()
+  );
+
+  const repeated =
+    organisations.length - new Set(organisations).size;
+
+  factors.push({
+    factor: "Repeated exposure across services",
+    points: Math.min(15, repeated * 7),
+    max: 15,
+    why: repeated + " repeated organisation record(s)"
+  });
+
+  const risky = {
+    mfa: false,
+    reuse: true,
+    update: false,
+    manager: false,
+    recovery: false
+  };
+
+  let practicePoints = 0;
+
+  for (const key in risky) {
+    const value = practices[key];
+
+    practicePoints +=
+      value === undefined || value === null
+        ? 1.5
+        : value === risky[key] ? 3 : 0;
+  }
+
+  factors.push({
+    factor: "User-reported security practices",
+    points: Math.round(practicePoints),
+    max: 15,
+    why: "Unanswered questions count as half risk"
+  });
+
+  const score = Math.min(
+    100,
+    factors.reduce((sum, x) => sum + x.points, 0)
+  );
+
+  const level =
+    score < 25 ? "LOW" :
+    score < 50 ? "MODERATE" :
+    score < 75 ? "HIGH" : "CRITICAL";
+
+  return { score, level, factors };
+}
+
+// ---------- OFFLINE RECOMMENDATIONS ----------
+function recs(breaches, practices) {
+  practices = practices || {};
+  const output = [];
+
+  const categories = new Set(
+    breaches.flatMap(x => x.data.map(c => c.toLowerCase()))
+  );
+
+  if (categories.has("passwords") || categories.has("password")) {
+    output.push({
+      priority: "high",
+      title: "Change affected passwords",
+      description: "Password data was reported. Change it on affected services and anywhere it was reused."
+    });
+  }
+
+  if (practices.mfa !== true) {
+    output.push({
+      priority: "high",
+      title: "Enable multi-factor authentication",
+      description: "MFA blocks many attacks that rely on a stolen password."
+    });
+  }
+
+  if (practices.reuse !== false) {
+    output.push({
+      priority: "high",
+      title: "Stop reusing passwords",
+      description: "Use a unique password per site."
+    });
+  }
+
+  if (breaches.length > 1) {
+    output.push({
+      priority: "medium",
+      title: "Review affected accounts",
+      description: "Several incidents were returned. Check login activity and settings."
+    });
+  }
+
+  if (practices.manager !== true) {
+    output.push({
+      priority: "medium",
+      title: "Use a password manager",
+      description: "It makes unique strong passwords practical."
+    });
+  }
+
+  if (practices.recovery !== true) {
+    output.push({
+      priority: "low",
+      title: "Review recovery email and phone",
+      description: "Make sure only you control them."
+    });
+  }
+
+  return output;
+}
+
+// ---------- CREATE OFFLINE DEMO RESULT ----------
+function createDemoResult(practices) {
+  const result = riskScore(DEMO, practices);
+
+  return {
+    status: "exposure_found",
+    incidents: DEMO.length,
+    unique_organisations: new Set(DEMO.map(x => x.domain)).size,
+    breaches: DEMO,
+    score: result.score,
+    level: result.level,
+    factors: result.factors,
+    recommendations: recs(DEMO, practices),
+    source: "SAMPLE DEMO DATA (not a real lookup)",
+    scanned_at: new Date().toISOString(),
+    disclaimer: "Sample data for demonstration. The score is a project-defined heuristic, not a probability."
+  };
+}
+
+// ---------- LIVE BACKEND REQUEST ----------
+async function post(path, body, controller) {
+  const response = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body),
+    signal: controller.signal
+  });
+
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(
+      typeof data.detail === "string"
+        ? data.detail
+        : `Server error: HTTP ${response.status}`
+    );
+  }
+
+  return data;
+}
+
+// ---------- SECURITY PRACTICES ----------
+function practices() {
+  if (!document.querySelector('details').open) return null;
+
+  const checked = key => $(key).checked;
+
+  return {
+    mfa: checked('mfa'),
+    reuse: checked('reuse'),
+    manager: checked('manager'),
+    recovery: checked('recovery'),
+    update: checked('update')
+  };
+}
+
+// ---------- EMAIL SCANNER ----------
+async function scan(demo) {
+  const out = $('out');
+  const email = $('email').value.trim();
+
+  // Demo mode does not need a real email address.
+  // No email is sent anywhere in demo mode.
+  if (!demo && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+    out.innerHTML =
+      '<p class="bad">Enter a valid email address, like name@example.com.</p>';
+    return;
+  }
+
+  if (demo) {
+    out.innerHTML = '<p class="mu">Loading offline sample data...</p>';
+    pulse = 1;
+
+    // This runs entirely inside the browser.
+    render(createDemoResult(practices()));
+    return;
+  }
+
+  if (API_BASE.includes("YOUR-RENDER-URL")) {
+    out.innerHTML =
+      '<p class="bad">Please add your actual Render URL to API_BASE first.</p>';
+    return;
+  }
+
+  out.innerHTML =
+    '<p class="mu">Connecting to ExposureX security server...</p>';
+
+  pulse = 1;
+
+  const controller = new AbortController();
+
+  // Render free servers may need time to wake up.
+  const timeout = setTimeout(() => controller.abort(), 90000);
+
+  const wakingMessage = setTimeout(() => {
+    out.innerHTML =
+      '<p class="mu">Your security server is waking up. This may take up to a minute. Please wait...</p>';
+  }, 2500);
+
+  const animation = setInterval(() => pulse = 1, 600);
+
+  try {
+    const result = await post(
+      '/api/scan',
+      {
+        email,
+        demo: false,
+        practices: practices()
+      },
+      controller
+    );
+
+    render(result);
+
+  } catch (error) {
+    const message = error.name === "AbortError"
+      ? "The server took too long to respond. It may be sleeping. Please try again."
+      : error.message === "Failed to fetch"
+        ? "Could not reach the backend. Check the Render URL, CORS settings and internet connection."
+        : error.message;
+
+    out.innerHTML =
+      `<p class="bad">${esc(message)}</p>
+       <p class="mu">This is not a clean result. No successful scan was completed.</p>
+       <button class="ghost" id="retry">Retry scan</button>`;
+
+    $('retry').onclick = () => scan(false);
+
+  } finally {
+    clearTimeout(timeout);
+    clearTimeout(wakingMessage);
+    clearInterval(animation);
+  }
+}
+
+ // ---------- backend connection ----------
+ const API_BASE = "https://exposurex.onrender.com";
 const $=id=>document.getElementById(id),esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-async function post(path,body){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+async function post(path, body) {
+    const r = await fetch(`${API_BASE}${path}`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(body)
+    });
+
+    const j = await r.json();
+
+    if (!r.ok) {
+        throw new Error(
+            typeof j.detail === 'string'
+                ? j.detail
+                : 'Invalid request'
+        );
+    }
+
+    return j;
+}const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
  const j=await r.json();if(!r.ok)throw new Error(typeof j.detail==='string'?j.detail:'Invalid request');return j}
 function practices(){if(!document.querySelector('details').open)return null;const g=k=>$(k).checked;return{mfa:g('mfa'),reuse:g('reuse'),manager:g('manager'),recovery:g('recovery'),update:g('update')}}
 
